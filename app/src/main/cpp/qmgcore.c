@@ -39,35 +39,72 @@ static int load_table(const char *path)
     u8 *d = malloc(n);
     if (fread(d, 1, n, f) != (size_t)n) { fclose(f); free(d); return -1; }
     fclose(f);
-    if (n < 64 || memcmp(d, "\x7f""ELF", 4) || d[4] != 2) { fprintf(stderr, "not an ELF64 file\n"); free(d); return -1; }
-    uint64_t phoff = rd64(d + 0x20), shoff = rd64(d + 0x28);
-    int phentsize = rd16(d + 0x36), phnum = rd16(d + 0x38), shentsize = rd16(d + 0x3a), shnum = rd16(d + 0x3c);
-    /* find .dynsym (type 11) and its string table */
-    uint64_t symoff = 0, symsz = 0, stroff = 0; 
-    for (int i = 0; i < shnum; i++) {
-        const u8 *sh = d + shoff + (uint64_t)i * shentsize;
-        if (rd32(sh + 4) == 11) {
-            symoff = rd64(sh + 0x18); symsz = rd64(sh + 0x20);
-            const u8 *ss = d + shoff + (uint64_t)rd32(sh + 0x28) * shentsize;
-            stroff = rd64(ss + 0x18);
-        }
-    }
-    if (!symoff) { fprintf(stderr, "no .dynsym\n"); free(d); return -1; }
+    if (n < 52 || memcmp(d, "\x7f""ELF", 4)) { fprintf(stderr, "not an ELF file\n"); free(d); return -1; }
+
     uint64_t vaddr = 0;
-    for (uint64_t o = 0; o + 24 <= symsz; o += 24) {
-        const u8 *s = d + symoff + o;
-        const char *name = (const char *)(d + stroff + rd32(s));
-        if (!strcmp(name, "Qmage_ori_deltaRGB_new")) { vaddr = rd64(s + 8); break; }
-    }
-    if (!vaddr) { fprintf(stderr, "symbol Qmage_ori_deltaRGB_new not found in %s\n", path); free(d); return -1; }
     long fo = -1;
-    for (int i = 0; i < phnum; i++) {
-        const u8 *ph = d + phoff + (uint64_t)i * phentsize;
-        if (rd32(ph) == 1) {
-            uint64_t off = rd64(ph + 8), va = rd64(ph + 16), fsz = rd64(ph + 32);
-            if (vaddr >= va && vaddr < va + fsz) { fo = (long)(vaddr - va + off); break; }
+
+    if (d[4] == 2) {
+        /* ELF64 (arm64 phones) */
+        uint64_t phoff = rd64(d + 0x20), shoff = rd64(d + 0x28);
+        int phentsize = rd16(d + 0x36), phnum = rd16(d + 0x38), shentsize = rd16(d + 0x3a), shnum = rd16(d + 0x3c);
+        uint64_t symoff = 0, symsz = 0, stroff = 0;
+        for (int i = 0; i < shnum; i++) {
+            const u8 *sh = d + shoff + (uint64_t)i * shentsize;
+            if (rd32(sh + 4) == 11) {
+                symoff = rd64(sh + 0x18); symsz = rd64(sh + 0x20);
+                const u8 *ss = d + shoff + (uint64_t)rd32(sh + 0x28) * shentsize;
+                stroff = rd64(ss + 0x18);
+            }
         }
+        if (!symoff) { fprintf(stderr, "no .dynsym\n"); free(d); return -1; }
+        for (uint64_t o = 0; o + 24 <= symsz; o += 24) {
+            const u8 *s = d + symoff + o;
+            const char *name = (const char *)(d + stroff + rd32(s));
+            if (!strcmp(name, "Qmage_ori_deltaRGB_new")) { vaddr = rd64(s + 8); break; }
+        }
+        if (!vaddr) { fprintf(stderr, "symbol Qmage_ori_deltaRGB_new not found in %s\n", path); free(d); return -1; }
+        for (int i = 0; i < phnum; i++) {
+            const u8 *ph = d + phoff + (uint64_t)i * phentsize;
+            if (rd32(ph) == 1) {
+                uint64_t off = rd64(ph + 8), va = rd64(ph + 16), fsz = rd64(ph + 32);
+                if (vaddr >= va && vaddr < va + fsz) { fo = (long)(vaddr - va + off); break; }
+            }
+        }
+    } else if (d[4] == 1) {
+        /* ELF32 (armv7 phones, e.g. Android 9 tablets) */
+        uint32_t phoff = rd32(d + 0x1c), shoff = rd32(d + 0x20);
+        int phentsize = rd16(d + 0x2a), phnum = rd16(d + 0x2c), shentsize = rd16(d + 0x2e), shnum = rd16(d + 0x30);
+        if ((long)shoff + (long)shnum * shentsize > n || (long)phoff + (long)phnum * phentsize > n) { fprintf(stderr, "bad ELF32 headers\n"); free(d); return -1; }
+        uint32_t symoff = 0, symsz = 0, stroff = 0;
+        for (int i = 0; i < shnum; i++) {
+            const u8 *sh = d + shoff + (uint32_t)i * shentsize;
+            if (rd32(sh + 4) == 11) {
+                symoff = rd32(sh + 16); symsz = rd32(sh + 20);
+                const u8 *ss = d + shoff + (uint32_t)rd32(sh + 24) * shentsize;
+                stroff = rd32(ss + 16);
+            }
+        }
+        if (!symoff || (long)symoff + symsz > n) { fprintf(stderr, "no .dynsym\n"); free(d); return -1; }
+        for (uint32_t o = 0; o + 16 <= symsz; o += 16) {
+            const u8 *s = d + symoff + o;
+            uint32_t nameoff = rd32(s);
+            if ((long)stroff + nameoff >= n) continue;
+            const char *name = (const char *)(d + stroff + nameoff);
+            if (!strcmp(name, "Qmage_ori_deltaRGB_new")) { vaddr = rd32(s + 4); break; }
+        }
+        if (!vaddr) { fprintf(stderr, "symbol Qmage_ori_deltaRGB_new not found in %s\n", path); free(d); return -1; }
+        for (int i = 0; i < phnum; i++) {
+            const u8 *ph = d + phoff + (uint32_t)i * phentsize;
+            if (rd32(ph) == 1) {
+                uint32_t off = rd32(ph + 4), va = rd32(ph + 8), fsz = rd32(ph + 16);
+                if (vaddr >= va && vaddr < (uint64_t)va + fsz) { fo = (long)(vaddr - va + off); break; }
+            }
+        }
+    } else {
+        fprintf(stderr, "unknown ELF class\n"); free(d); return -1;
     }
+
     if (fo < 0 || fo + 8 + 2048 > n) { fprintf(stderr, "bad table location\n"); free(d); return -1; }
     for (int i = 0; i < 512; i++) T[i] = (i32)rd32(d + fo + 8 + 4 * i);
     free(d);
@@ -75,7 +112,6 @@ static int load_table(const char *path)
     g_table_ok = 1;
     return 0;
 }
-
 static void init_tables(void)
 {
     for (int i = 255; i >= 2; i--) exact_idx[(u16)T[i]] = (u16)i;
