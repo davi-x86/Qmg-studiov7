@@ -22,7 +22,7 @@ android {
         targetSdk = 34
         versionCode = verCode
         versionName = verName
-        ndk { abiFilters += listOf("arm64-v8a") }
+        ndk { abiFilters += listOf("armeabi-v7a") }
     }
 
     externalNativeBuild {
