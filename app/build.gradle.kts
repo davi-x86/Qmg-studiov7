@@ -18,7 +18,7 @@ android {
 
     defaultConfig {
         applicationId = "com.namal.qmgstudio"
-        minSdk = 29
+        minSdk = 28
         targetSdk = 34
         versionCode = verCode
         versionName = verName
